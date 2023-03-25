@@ -48,28 +48,39 @@ else:
 
 shop = shopify.Shop.current
 products = shopify.Product.find(status='active')
-prd_data: list[dict[str, Union[str, float, datetime]]] = []
+prd_data: dict[int, dict[str, Union[str, float, datetime, list[any]]]] = {}
+inv_item_ids: dict[any, int] = {}
 for p in products:
-    prd: dict[str, Union[str, float, datetime]] = {}
+    prd: dict[str, Union[str, float, datetime, list[any]]] = {}
     product: Product = p
     attributes = product.attributes
     print('attributes: ' + str(attributes))
     variants = attributes['variants']
+    prd['inv_item_ids']: list[any] = []
     for variant in variants:
-        inv_item_id = variant.attributes['inventory_item_id']
-        inv_item = shopify.InventoryItem.find(inv_item_id)
-        inv_attrs = inv_item.attributes
-        print('inv attributes: ' + str(attributes))
+        if 'inventory_item_id' in variant.attributes:
+            inv_item_id = variant.attributes['inventory_item_id']
+            inv_item_ids[inv_item_id] = attributes['id']
+    prd['title'] = attributes['title']
+    prd['created_at'] = datetime.fromisoformat(attributes['created_at'])
+    prd['product_type'] = attributes['product_type']
+    prd['handle'] = attributes['handle']
+    prd_data[attributes['id']] = prd
 
-        if inv_attrs['cost'] is not None:
-            prd['cost'] = inv_attrs['cost']
+inv_items = shopify.InventoryItem.find(ids=inv_item_ids.keys())
+for inv_item in inv_items:
+    inv_attrs = inv_item.attributes
+    print('inv attributes: ' + str(inv_attrs))
+    if 'id' in inv_attrs and 'cost' in inv_attrs:
+        prd_data[inv_item_ids[inv_attrs['id']]]['cost'] = inv_attrs['cost']
+    elif 'id' not in inv_attrs:
+        print('no id in inv item')
+        continue
+    elif 'cost' not in inv_attrs:
+        print('no cost in inv item')
+        continue
 
-    if 'cost' in prd:
-        prd['title'] = attributes['title']
-        prd['created_at'] = datetime.fromisoformat(attributes['created_at'])
-        prd['product_type'] = attributes['product_type']
-        prd['handle'] = attributes['handle']
-        prd_data.append(prd)
+
 print("prd data: ")
 print(prd_data)
 headers = {'Authorization': 'Bearer ' + wave_access_token}
@@ -107,6 +118,7 @@ debit_account_id = None
 credit_account_id = None
 dummy_account_id = None
 business_id = None
+
 if resp.status_code == 200:
     json = resp.json()
     if json is None:
@@ -140,7 +152,11 @@ elif resp.status_code == 400:
     print(f'failed to query businesses: {resp.content}')
     exit(1)
 
-for prd in prd_data:
+for idx in prd_data:
+    prd = prd_data[idx]
+    if 'cost' not in prd:
+        print(f"{prd['title']} had no cost found in inventory, skipping")
+        continue
     # post_data = """
     #   mutation ($input:MoneyTransactionCreateInput!){
     #     moneyTransactionCreate(input:$input){
