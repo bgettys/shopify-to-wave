@@ -12,9 +12,13 @@ shopify_shop_name = environ.get("SHOPIFY_SHOP_NAME")
 if shopify_shop_name is None:
     print("shopify shop name not provided. bailing out")
     exit(1)
-wave_access_token = environ.get("WAVE_ACCESS_TOKEN")
-if wave_access_token is None:
-    print("wave access token not provided. bailing out")
+wave_internal_access_token = environ.get("WAVE_INTERNAL_ACCESS_TOKEN")
+if wave_internal_access_token is None:
+    print("wave internal access token not provided. bailing out")
+    exit(1)
+wave_external_access_token = environ.get("WAVE_EXTERNAL_ACCESS_TOKEN")
+if wave_external_access_token is None:
+    print("wave external access token not provided. bailing out")
     exit(1)
 wave_business_name = environ.get("WAVE_BUSINESS_NAME")
 if wave_business_name is None:
@@ -48,15 +52,13 @@ else:
 
 shop = shopify.Shop.current
 products = shopify.Product.find(status='active')
-prd_data: dict[int, dict[str, Union[str, float, datetime, list[any]]]] = {}
-inv_item_ids: dict[any, int] = {}
+prd_data: dict[int, dict[str, Union[str, float, datetime]]] = {}
+inv_item_ids: dict[int, int] = {}
 for p in products:
-    prd: dict[str, Union[str, float, datetime, list[any]]] = {}
+    prd: dict[str, Union[str, float, datetime]] = {}
     product: Product = p
     attributes = product.attributes
-    print('attributes: ' + str(attributes))
     variants = attributes['variants']
-    prd['inv_item_ids']: list[any] = []
     for variant in variants:
         if 'inventory_item_id' in variant.attributes:
             inv_item_id = variant.attributes['inventory_item_id']
@@ -66,11 +68,11 @@ for p in products:
     prd['product_type'] = attributes['product_type']
     prd['handle'] = attributes['handle']
     prd_data[attributes['id']] = prd
+iids = list(inv_item_ids)
+inv_items = shopify.InventoryItem.find(ids=','.join([str(i) for i in iids]))
 
-inv_items = shopify.InventoryItem.find(ids=inv_item_ids.keys())
 for inv_item in inv_items:
     inv_attrs = inv_item.attributes
-    print('inv attributes: ' + str(inv_attrs))
     if 'id' in inv_attrs and 'cost' in inv_attrs:
         prd_data[inv_item_ids[inv_attrs['id']]]['cost'] = inv_attrs['cost']
     elif 'id' not in inv_attrs:
@@ -80,10 +82,9 @@ for inv_item in inv_items:
         print('no cost in inv item')
         continue
 
-
 print("prd data: ")
 print(prd_data)
-headers = {'Authorization': 'Bearer ' + wave_access_token}
+headers = {'Authorization': 'Bearer ' + wave_external_access_token}
 print('wave business name: ' + wave_business_name)
 post_data = """
     query {
@@ -154,7 +155,7 @@ elif resp.status_code == 400:
 
 for idx in prd_data:
     prd = prd_data[idx]
-    if 'cost' not in prd:
+    if 'cost' not in prd.keys() or prd['cost'] == 0:
         print(f"{prd['title']} had no cost found in inventory, skipping")
         continue
     # post_data = """
@@ -211,6 +212,7 @@ for idx in prd_data:
     input_data = {
         "input": {
             "businessId": business_id,
+            "externalId": f"finished-item-{prd['handle']}",
             "date": prd['created_at'].date().isoformat(),
             "description": f"Finished {prd['title']}",
             "lineItems": [
@@ -220,7 +222,7 @@ for idx in prd_data:
                         "accountId": debit_account_id
                     },
                     "description": None,
-                    "amount": "0",
+                    "amount": prd['cost'],
                     "itemType": "DEBIT"
                 }, {
                     "category": {
@@ -228,7 +230,7 @@ for idx in prd_data:
                         "accountId": credit_account_id
                     },
                     "description": None,
-                    "amount": "0",
+                    "amount": prd['cost'],
                     "itemType": "CREDIT"
                 }
             ]
@@ -238,7 +240,6 @@ for idx in prd_data:
         mutation TransactionCreate($input: TransactionCreateInput!) {
           transactionCreate(input: $input) {
               didSucceed
-              transaction {...TransactionFragment}
           }
         }
     """
@@ -247,6 +248,7 @@ for idx in prd_data:
         "query": query,
         "variables": input_data
     }
+    headers['Authorization'] = f'Bearer {wave_internal_access_token}'
     resp = requests.post('https://gql.waveapps.com/graphql/internal', headers=headers, json=json_payload)
     print("mutation status: " + str(resp.status_code))
     print("mutation response: " + str(resp.content))
